@@ -1,0 +1,71 @@
+import pyaudio
+import torch
+import torchaudio
+import torch.nn.functional as F
+from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
+import numpy as np
+
+# Load feature extractor and model
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition")
+model = Wav2Vec2ForSequenceClassification.from_pretrained("ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition")
+
+# Set the device (GPU or CPU)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
+# PyAudio settings
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000  # Wav2Vec2 expects 16kHz
+CHUNK = 1024
+RECORD_SECONDS = 5  # Record for 5 seconds
+
+# Initialize PyAudio
+p = pyaudio.PyAudio()
+
+def record_audio():
+    stream = p.open(format=FORMAT, channels=CHANNELS,
+                    rate=RATE, input=True,
+                    frames_per_buffer=CHUNK)
+    
+    print("Recording...")
+    frames = []
+    
+    for _ in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+        data = stream.read(CHUNK)
+        frames.append(np.frombuffer(data, dtype=np.int16))
+    
+    print("Finished recording.")
+    
+    stream.stop_stream()
+    stream.close()
+    
+    # Convert frames to numpy array
+    audio_np = np.hstack(frames)
+    
+    return audio_np
+
+def predict_emotion(audio_np):
+    inputs = feature_extractor(audio_np, sampling_rate=RATE, return_tensors="pt", padding=True)
+    inputs = {key: inputs[key].to(device) for key in inputs}
+    
+    with torch.no_grad():
+        logits = model(**inputs).logits
+
+    scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
+    config = model.config
+    outputs = [{"Label": config.id2label[i], "Score": f"{round(score * 100, 3)}%"} for i, score in enumerate(scores)]
+    return outputs
+
+# Capture audio from mic
+audio_np = record_audio()
+
+# Get emotion predictions
+emotions = predict_emotion(audio_np)
+
+# Print results
+for emotion in emotions:
+    print(emotion)
+
+# Terminate PyAudio
+p.terminate()
