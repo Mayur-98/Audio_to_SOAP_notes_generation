@@ -1,58 +1,50 @@
-import pyaudio
-import numpy as np
 import torch
 import torchaudio
+import pyaudio
+import numpy as np
 import torch.nn.functional as F
 from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
 
-# Load pre-trained model and feature extractor
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-large-960h")
-model = Wav2Vec2ForSequenceClassification.from_pretrained("ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition")
+# Initialize the model and feature extractor
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("superb/wav2vec2-large-superb-er")
+model = Wav2Vec2ForSequenceClassification.from_pretrained("superb/wav2vec2-large-superb-er")
 model.eval()
 
-# Function to record and process audio from the microphone
-def predict_live_audio(sample_rate=16000, duration=5):
-    # Initialize PyAudio
-    p = pyaudio.PyAudio()
+# Initialize PyAudio
+p = pyaudio.PyAudio()
 
-    # Open the microphone stream
-    stream = p.open(format=pyaudio.paInt16, channels=1, rate=sample_rate, input=True, frames_per_buffer=1024)
+# Audio stream parameters
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000  # Sampling rate for Wav2Vec2 models
+CHUNK = 1024  # Frame size
 
-    print("Recording...")
-    frames = []
+# Open audio stream
+stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
 
-    # Capture audio for the specified duration
-    for _ in range(0, int(sample_rate / 1024 * duration)):
-        data = stream.read(1024)
-        frames.append(data)
+def predict_emotion(audio_chunk):
+    # Convert audio chunk to numpy array
+    audio_array = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+    
+    # Preprocess audio and make prediction
+    inputs = feature_extractor(audio_array, sampling_rate=RATE, return_tensors="pt", padding=True)
+    with torch.no_grad():
+        logits = model(**inputs).logits
+        scores = F.softmax(logits, dim=1).cpu().numpy()[0]
+    
+    # Get emotion labels and scores
+    predicted_emotions = [{"Label": model.config.id2label[i], "Score": round(score * 100, 2)} for i, score in enumerate(scores)]
+    return predicted_emotions
 
-    # Stop recording
+print("Recording and analyzing emotions in real-time... Press Ctrl+C to stop.")
+try:
+    while True:
+        audio_chunk = stream.read(CHUNK)
+        emotions = predict_emotion(audio_chunk)
+        print("Emotions:", emotions)
+
+except KeyboardInterrupt:
+    print("Stopped.")
     stream.stop_stream()
     stream.close()
     p.terminate()
-
-    # Convert audio bytes to numpy array
-    audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
-
-    # Normalize audio to range [-1, 1] as the model expects
-    audio_data = audio_data.astype(np.float32) / np.iinfo(np.int16).max
-
-    # Extract features from the audio
-    inputs = feature_extractor(audio_data, sampling_rate=sample_rate, return_tensors="pt", padding=True)
-
-    # Pass audio through the model
-    with torch.no_grad():
-        logits = model(**inputs).logits
-
-    # Apply softmax to get probabilities
-    scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
-
-    # Get the emotion labels
-    config = model.config
-    predictions = [{"Label": config.id2label[i], "Score": f"{round(score * 100, 3)}%"} for i, score in enumerate(scores)]
-    
-    return predictions
-
-# Run prediction from live microphone input
-results = predict_live_audio()
-print(results)
