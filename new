@@ -48,3 +48,77 @@ except KeyboardInterrupt:
     stream.stop_stream()
     stream.close()
     p.terminate()
+######################################
+
+with accumulated score at end.
+
+
+import pyaudio
+import torch
+import torchaudio
+import numpy as np
+import torch.nn.functional as F
+from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2ForSequenceClassification
+
+# Load the pre-trained model and feature extractor
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("superb/wav2vec2-large-superb-er")
+model = Wav2Vec2ForSequenceClassification.from_pretrained("superb/wav2vec2-large-superb-er")
+model.eval()
+
+# Initialize PyAudio for real-time audio capture
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000
+CHUNK = 1024
+p = pyaudio.PyAudio()
+
+# Start the stream
+stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
+
+# Accumulator for emotion scores
+emotion_accumulator = np.zeros(model.config.num_labels)
+
+def process_audio_data(audio_data):
+    inputs = feature_extractor(audio_data, sampling_rate=RATE, return_tensors="pt", padding=True)
+    with torch.no_grad():
+        logits = model(**inputs).logits
+        scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
+    
+    return scores
+
+try:
+    print("Listening... Press Ctrl+C to stop.")
+    while True:
+        audio_frames = []
+        # Collect audio data for processing
+        for _ in range(0, int(RATE / CHUNK * 1)):  # Capture for 1 second
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            audio_frames.append(np.frombuffer(data, dtype=np.int16))
+        
+        audio_data = np.concatenate(audio_frames)
+        
+        # Process the current audio chunk
+        emotion_scores = process_audio_data(audio_data)
+        
+        # Accumulate the scores
+        emotion_accumulator += emotion_scores
+        
+        # Display real-time emotions
+        labels = model.config.id2label
+        for i, score in enumerate(emotion_scores):
+            print(f"{labels[i]}: {score * 100:.2f}%")
+        print("-" * 50)
+
+except KeyboardInterrupt:
+    # Stop the stream
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+
+    # Calculate overall average emotion
+    avg_emotion_scores = emotion_accumulator / np.sum(emotion_accumulator)
+    overall_emotion_idx = np.argmax(avg_emotion_scores)
+    overall_emotion = model.config.id2label[overall_emotion_idx]
+
+    print("\nOverall Emotion Result:")
+    print(f"The most dominant emotion was: {overall_emotion}")
